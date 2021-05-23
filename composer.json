@@ -1,0 +1,12 @@
+{
+  "name": "colema18/gathercontent",
+  "type": "drupal-module",
+  "description": "GatherContent for Drupal",
+  "license": "GPL-2.0+",
+  "require": {
+    "cheppers/gathercontent-client": "^2.0",
+    "drupal/core": "^8.7 || ^9",
+    "drupal/migrate_tools": "^5.0"
+  },
+  "minimum-stability": "dev"
+}
