@@ -1,0 +1,168 @@
+<?php
+
+/**
+ * @file
+ * Main module file for GatherContent module.
+ */
+
+use Drupal\Core\Entity\EntityInterface;
+use Drupal\Core\Entity\EntityTypeInterface;
+use Drupal\Core\Field\BaseFieldDefinition;
+use Drupal\gathercontent\Entity\MappingInterface;
+use Drupal\migrate\Plugin\MigrationInterface;
+use Drupal\gathercontent\MigrateExecutable;
+use Drupal\gathercontent\MigrateMessageCapture;
+
+/**
+ * Implements hook_entity_base_field_info().
+ *
+ * Add a 'GC mapping ID' and 'GC ID fields' base field to all node types.
+ *
+ * {@inheritdoc}
+ */
+function gathercontent_entity_base_field_info(EntityTypeInterface $entity_type) {
+  $fields = [];
+  if ($entity_type->id() === 'file') {
+    $fields['gc_file_id'] = BaseFieldDefinition::create('string')
+      ->setLabel(t('GC ID'))
+      ->setDescription(t('The ID of GatherContent content.'))
+      ->setReadOnly(TRUE);
+  }
+
+  return $fields;
+}
+
+/**
+ * Implements hook_entity_delete().
+ */
+function gathercontent_entity_delete(EntityInterface $entity) {
+  gathercontent_on_entity_delete($entity, true);
+}
+
+/**
+ * Implements hook_entity_translation_delete().
+ */
+function gathercontent_entity_translation_delete(EntityInterface $entity) {
+  gathercontent_on_entity_delete($entity);
+}
+
+/**
+ * Batch operation callback for importing items.
+ */
+function gathercontent_import_process($gc_ids, array $import_options, MappingInterface $mapping, &$context = []) {
+  $client = \Drupal::service('gathercontent.client');
+  $migrationIds = $mapping->getMigrations();
+
+  if (!isset($context['results']['success'])) {
+    $context['results']['success'] = 0;
+  }
+
+  if (!isset($context['results']['failed'])) {
+    $context['results']['failed'] = 0;
+  }
+
+  if (!empty($migrationIds)) {
+    foreach ($migrationIds as $migrationId) {
+      /** @var \Drupal\migrate\Plugin\Migration $migration */
+      $migration = \Drupal::service('plugin.manager.migration')
+        ->createInstance($migrationId);
+
+      if ($migration) {
+        $messages = new MigrateMessageCapture();
+        $executable = new MigrateExecutable($migration, $messages, [
+          'idlist' => implode(',', $gc_ids),
+          'import_options' => $import_options,
+          'client' => $client,
+        ]);
+        $status = '';
+
+        try {
+          $status = $executable->import();
+          $context['results']['success'] += $executable->getCreatedCount() + $executable->getUpdatedCount();
+          $context['results']['failed'] += $executable->getFailedCount() + $executable->getIgnoredCount();
+
+          if ($executable->getFailedCount() + $executable->getIgnoredCount() > 0) {
+            $executable->rollback();
+          }
+        }
+        catch (\Exception $e) {
+          \Drupal::logger('gathercontent')->error($e->getMessage());
+        }
+
+        switch ($status) {
+          case MigrationInterface::RESULT_FAILED:
+            if ($migration->getStatus() !== MigrationInterface::STATUS_IDLE) {
+              $migration->setStatus(MigrationInterface::STATUS_IDLE);
+            }
+
+            // Add and log any captured messages.
+            foreach ($messages->getMessages() as $message) {
+              $context['results']['messages'][] = (string) $message;
+              \Drupal::logger('gathercontent')->error($message);
+            }
+            break;
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Deletes the tracked table records for this entity and rolls back the migration.
+ *
+ * @param \Drupal\Core\Entity\EntityInterface $entity
+ *
+ * @throws \Drupal\migrate\MigrateException
+ */
+function gathercontent_on_entity_delete(EntityInterface $entity, $skipLanguage = false) {
+  $entityId = $entity->id();
+  $entityType = $entity->getEntityTypeId();
+  $langcode = $entity->language()->getId();
+
+  /** @var \Drupal\Core\Database\Connection $connection */
+  $connection = \Drupal::service('database');
+  $query = $connection->select('gathercontent_entity_mapping')
+    ->fields('gathercontent_entity_mapping', [
+      'entity_id',
+      'entity_type',
+      'gc_id',
+      'migration_id',
+    ])
+    ->condition('entity_id', $entityId)
+    ->condition('entity_type', $entityType);
+
+  if (!$skipLanguage) {
+    $query->condition('langcode', $langcode);
+  }
+
+  $results = $query->execute()
+    ->fetchAll();
+
+  if (empty($results)) {
+    return;
+  }
+
+  $deleteQuery = $connection->delete('gathercontent_entity_mapping')
+    ->condition('entity_id', $entityId)
+    ->condition('entity_type', $entityType);
+
+  if (!$skipLanguage) {
+    $deleteQuery->condition('langcode', $langcode);
+  }
+
+  $deleteQuery->execute();
+
+  foreach ($results as $result) {
+    $migration = \Drupal::service('plugin.manager.migration')
+      ->createInstance($result->migration_id);
+
+    if ($migration) {
+      $messages = new MigrateMessageCapture();
+      $executable = new MigrateExecutable($migration, $messages, [
+        'idlist' => $result->gc_id,
+      ]);
+
+      $executable->rollback();
+    }
+  }
+}

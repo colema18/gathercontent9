@@ -1,0 +1,60 @@
+<?php
+
+/**
+ * @file
+ * Main module file for GatherContent Upload module.
+ */
+
+use Drupal\Core\Entity\EntityInterface;
+use Drupal\gathercontent\Entity\MappingInterface;
+
+/**
+ * Upload batch operation callback.
+ *
+ * @param \Drupal\Core\Entity\EntityInterface $entity
+ *   Object of entity we want to upload.
+ * @param \Drupal\gathercontent\Entity\MappingInterface $mapping
+ *   Mapping object.
+ * @param int|null $gcId
+ *   GatherContent ID.
+ * @param array $context
+ *   Context of operation.
+ */
+function gathercontent_upload_process(EntityInterface $entity, MappingInterface $mapping, $gcId = NULL, &$context = []) {
+  /** @var \Drupal\gathercontent_upload\Export\Exporter $exporter */
+  $exporter = \Drupal::service('gathercontent_upload.exporter');
+
+  if (!isset($context['results']['success'])) {
+    $context['results']['success'] = 0;
+  }
+
+  if (!isset($context['results']['failed'])) {
+    $context['results']['failed'] = 0;
+  }
+
+  try {
+    $exporter->export($entity, $mapping, $gcId, $context);
+    $context['results']['success']++;
+  }
+  catch (\Exception $e) {
+    $context['results']['messages'][] = $e->getMessage();
+    $context['results']['failed']++;
+  }
+}
+
+/**
+ * Upload batch operation callback.
+ *
+ * @param array $context
+ *   Context of operation.
+ */
+function gathercontent_upload_migrate_update_process(&$context) {
+  /** @var \Drupal\gathercontent_upload\Export\MigrateUpdater $migrateUpdater */
+  $migrateUpdater = \Drupal::service('gathercontent_upload.migrate_updater');
+  try {
+    $migrateUpdater->updateIdMap($context);
+  }
+  catch (\Exception $e) {
+    $context['results']['messages'][] = $e->getMessage();
+  }
+}
